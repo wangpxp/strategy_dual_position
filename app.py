@@ -2,7 +2,7 @@ import streamlit as st
 import subprocess, sys, json, shlex
 
 st.set_page_config(page_title="Dual Position Allocator", layout="wide")
-st.title("📈 双仓位模型（底仓 + 战术仓）· 极简模式")
+st.title("📈 双仓位模型（底仓 + 战术仓）")
 
 with st.sidebar:
     st.header("参数")
@@ -57,7 +57,7 @@ if run_btn:
                             sig.get("tier_fraction_of_tactical", 0.0))
 
         # —— 醒目的仓位卡片（简洁视图）——
-        st.subheader("📌 今日建议（简洁视图）")
+        st.subheader("📌 当前建议（简洁视图）")
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("底仓投入 (Core)", fmt_money(core_invest))
@@ -67,7 +67,7 @@ if run_btn:
 
         # “今日投入 / 总资产”的可视化（极简模式下等于 invest / cash）
         st.progress(min(max(total_frac, 0.0), 1.0),
-                    text=f"今日投入占总资产：{total_frac*100:.1f}%")
+                    text=f"当前投入占总资产：{total_frac*100:.1f}%")
 
         # 档位徽章 + 关键信号
         badge_color = "#10b981" if str(tier).startswith("BUY") or str(tier) == "ALL_IN" else "#6b7280"

@@ -1,0 +1,8 @@
+streamlit
+yfinance
+pandas
+numpy
+requests
+fear-and-greed
+pytz
+python-dateutil

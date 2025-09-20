@@ -67,7 +67,7 @@ if run_btn:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("底仓投入 (Core)", fmt_money(core_invest))
         c2.metric("战术投入 (Tactical)", fmt_money(tactical_invest))
-        c3.metric("今日合计", fmt_money(total_invest))
+        c3.metric("当前合计", fmt_money(total_invest))
         c4.metric("剩余现金", fmt_money(remaining_cash))
 
         # “今日投入 / 总资产”的可视化（极简模式下等于 invest / cash）

@@ -11,11 +11,6 @@ with st.sidebar:
     mode = st.selectbox("模式", ["build","balanced","conservative","aggressive","trend","contrarian"], index=1)
     run_btn = st.button("🚀 运行")
 
-st.info(
-    "本页面为 **极简模式**：把“总资产”全部视为现金传入后端脚本（不传 equity）。"
-    "如你已经持有部分仓位，请改用高级版页面或命令行传入 `--equity / --core_held / --tactical_held`。",
-    icon="ℹ️"
-)
 
 # 组装命令（只传 3 个参数）
 cmd = [

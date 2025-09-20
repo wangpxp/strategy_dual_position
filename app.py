@@ -10,11 +10,6 @@ with st.sidebar:
     cash = st.number_input("现金 (元)", value=30000.0, min_value=0.0, step=1000.0)
     ticker = st.text_input("Ticker（如 QQQ / VOO / IWY / ^NDX）", value="VOO")
     mode = st.selectbox("模式", ["build","balanced","conservative","aggressive","trend","contrarian"], index=1)
-    date = st.text_input("日期 YYYY-MM-DD（留空=今天）", value="")
-    fgi = st.text_input("手动 FGI 覆盖（0-100，可空）", value="")
-    equity = st.text_input("当前已持有市值 equity（元，可空）", value="")
-    core_ratio = st.text_input("覆盖底仓比例 core_ratio 0-1（可空）", value="")
-    tactical_ratio = st.text_input("覆盖战术比例 tactical_ratio 0-1（可空）", value="")
     run_btn = st.button("🚀 运行")
 
 # 组装命令（直接调用你的脚本）

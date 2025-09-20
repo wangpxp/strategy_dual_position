@@ -3,32 +3,34 @@
 """
 dual_position_allocator.py
 
-双仓位模型（底仓 + 战术仓）· 多模式版（支持输入当前仓位）
-- 输入：当前全部现金（--cash），当前已持有市值（--equity）及可选分解（--core_held / --tactical_held）
-- 输出：今天建议的底仓投入、战术仓加仓、剩余现金（只加不减），并展示目标与当前的对齐情况
+双仓位模型（底仓 + 战术仓）· 多模式版
+- 输入：当前全部现金（--cash）
+- 输出：今天建议的底仓投入、战术仓加仓、剩余现金（空仓）
 
 内置模式（--mode）：
-  build         建仓：只买底仓（core），战术仓强制 0（不随信号买入）
+  build         建仓：只买底仓（core），战术仓严格按信号（不抬档）
   balanced      均衡（默认）：60% 底仓 + 40% 战术
   conservative  保守：70% 底仓 + 30% 战术
   aggressive    激进：40% 底仓 + 60% 战术
-  trend         顺势：强趋势+低波动 → 战术档位上调一档（减少踏空）
+  trend         顺势：趋势强 + 低波动 → 战术档位上调一档（减少踏空）
   contrarian    逆向：贪婪&乏回撤降档；恐惧或深回撤升档
 
-信号逻辑（轻量化，和 buy_decider 同源）：
+信号逻辑（与 buy_decider 同源，轻量化）：
 - 情绪优先（FGI）+ 弱化趋势 + 回撤分（相对 MA20）+ 分位加成
 - 反人性：VIX ≥ 98% 分位 → 至少 BUY_50；且 (FGI≤20 或 dev20≤-8%) → 直接 ALL_IN
 - 美元极强（UUP ≥ 90% 分位）仅降一档（不打回 WAIT）
-- 智能波动护栏（方案B）：仅在“高波动(vol20≥0.30) + 主要非下跌驱动(downfrac<0.6) + 未触发反人性”时，
+- 智能波动护栏：仅在“高波动(vol20≥0.30) + 主要非下跌驱动(downfrac<0.6) + 未触发反人性”时，
   把 ALL_IN → BUY_50（避免在非下跌驱动的躁市里满仓）
+
+用法示例：
+  python dual_position_allocator.py --cash 100000
+  python dual_position_allocator.py --cash 100000 --ticker VOO
+  python dual_position_allocator.py --cash 100000 --date 2025-09-19 --fgi 40
+  python dual_position_allocator.py --cash 100000 --mode build
+  python dual_position_allocator.py --cash 100000 --mode trend
 
 依赖（建议 venv）：
   pip install yfinance pandas numpy requests fear-and-greed pytz python-dateutil
-
-用法示例：
-  python dual_position_allocator.py --cash 30000 --mode build --ticker VOO
-  python dual_position_allocator.py --cash 30000 --equity 50000 --mode balanced --ticker QQQ
-  python dual_position_allocator.py --cash 30000 --equity 50000 --core_held 30000 --tactical_held 20000 --mode contrarian
 """
 
 import sys
@@ -215,6 +217,7 @@ def build_context_for_date(target_date, ticker="QQQ", lookback_days=500):
 
 # ------------------------ Scoring ------------------------
 
+# 7档位：WAIT / 10% / 20% / 30% / 50% / 75% / 100%
 TIER_ORDER = ["WAIT", "BUY_10", "BUY_20", "BUY_30", "BUY_50", "BUY_75", "ALL_IN"]
 TIER_FRAC  = {
     "WAIT":   0.00,
@@ -377,7 +380,7 @@ def score_signal(inputs: Inputs) -> dict:
 # ------------------------ Mode presets & tier adjust ------------------------
 
 MODE_PRESETS = {
-    # 底仓/战术仓比例（对总资金）
+    # 底仓/战术仓比例（对现金）
     "build":        {"core_ratio": 0.30, "tactical_ratio": 0.70},
     "balanced":     {"core_ratio": 0.60, "tactical_ratio": 0.40},
     "conservative": {"core_ratio": 0.70, "tactical_ratio": 0.30},
@@ -396,8 +399,8 @@ def adjust_tier_by_mode(mode: str, sig: dict):
     根据模式微调战术档位（仅影响战术仓的投入比例），返回 (new_tier, new_frac, explain)
 
     变更点：
-    - build 模式：战术仓强制不买（核心：只买底仓）
-    - trend / contrarian 保持原有微调逻辑
+    - build 模式：不再抬档，完全不动战术仓（只买底仓）。
+    - trend / contrarian 保持原有微调逻辑。
     """
     tier = sig["tier"]
     frac = sig["tier_fraction_of_tactical"]
@@ -413,15 +416,14 @@ def adjust_tier_by_mode(mode: str, sig: dict):
     if "breakdown" in sig:
         dev20 = sig["breakdown"].get("dev20", None)
         trend_raw = sig["breakdown"].get("trend_raw", None)
-        fgi_score = sig["breakdown"].get("fgi_score", None)
+        fgi_score = sig["breakdown"].get("fgi_score", None)  # 注意：这是评分，不是原始FGI
     if "risk_switches" in sig:
         vol20 = sig["risk_switches"].get("vol20", None)
         downfrac = sig["risk_switches"].get("downfrac", None)
 
-    # --- build 模式：战术仓强制 0 ---
+    # --- build 模式：不做任何调整（只买底仓） ---
     if mode == "build":
-        explain["adjust"] = "build: core-only (tactical 0)"
-        return "WAIT", 0.0, explain
+        return tier, frac, explain
 
     # --- trend 模式：强趋势 + 低波动 → 升一档 ---
     if mode == "trend":
@@ -431,6 +433,7 @@ def adjust_tier_by_mode(mode: str, sig: dict):
             return new_tier, TIER_FRAC[new_tier], explain
 
     # --- contrarian 模式 ---
+    # 深回撤 → 升一档；贪婪&延展 → 降一档
     if mode == "contrarian":
         if dev20 is not None and dev20 <= -0.05:
             new_tier = _bump_tier(tier, +1)
@@ -448,30 +451,20 @@ def adjust_tier_by_mode(mode: str, sig: dict):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cash", type=float, required=True, help="当前可用现金（单位：元）")
-    ap.add_argument("--equity", type=float, default=0.0,
-                    help="当前已持有的同标的市值（单位：元）。用于按目标比例补齐，不会减仓。")
-    ap.add_argument("--core_held", type=float, default=None,
-                    help="当前已持有中，视为底仓的部分（元）。若不填则默认优先占满底仓目标。")
-    ap.add_argument("--tactical_held", type=float, default=None,
-                    help="当前已持有中，视为战术仓的部分（元）。若不填则根据 equity 与 core_held 推断。")
-
+    ap.add_argument("--cash", type=float, required=True, help="当前可用现金（全部现金，单位：元）")
     ap.add_argument("--date", help="YYYY-MM-DD (local date). Default: today.", default=None)
-    ap.add_argument("--ticker", help="Ticker (default QQQ). e.g., VOO, IWY, ^NDX", default="QQQ")
+    ap.add_argument("--ticker", help="Ticker to use (default QQQ). e.g., VOO, IWY, ^NDX", default="QQQ")
     ap.add_argument("--fgi", type=float, help="Manual override of FGI value (0-100).")
-
-    ap.add_argument("--mode", choices=["build","balanced","conservative","aggressive","trend","contrarian"],
-                    default="balanced", help="分配模式（默认 balanced）")
-
-    # 可覆盖模式预设（非必填）
-    ap.add_argument("--core_ratio", type=float, default=None, help="覆盖目标底仓占比（0~1，对总资金）")
-    ap.add_argument("--tactical_ratio", type=float, default=None, help="覆盖目标战术占比（0~1，对总资金）")
+    ap.add_argument("--mode", choices=["build","balanced","conservative","aggressive","trend","contrarian"], default="balanced",
+                    help="分配模式（默认 balanced）")
+    # 允许高级用户手动覆盖比例；否则用模式预设
+    ap.add_argument("--core_ratio", type=float, default=None, help="覆盖底仓占现金比例（0~1）")
+    ap.add_argument("--tactical_ratio", type=float, default=None, help="覆盖战术仓最大占现金比例（0~1）")
     args = ap.parse_args()
 
-    if args.cash < 0: raise SystemExit("--cash 必须 >= 0")
-    if args.equity < 0: raise SystemExit("--equity 必须 >= 0")
-
     target_date = dateparser.parse(args.date).date() if args.date else dt.datetime.now(tzlocal()).date()
+    if args.cash < 0:
+        raise SystemExit("--cash 必须 >= 0")
 
     # 1) 获取指标
     fgi_val, fgi_desc, fgi_ts, fgi_source = get_fgi_for_date(target_date, manual=args.fgi)
@@ -488,7 +481,7 @@ def main():
         vix_pct=ctx["vix_pct"], uup_pct=ctx["uup_pct"]
     ))
     if not isinstance(sig, dict):
-        raise RuntimeError("score_signal returned no result (None). Please check implementation.")
+        raise RuntimeError("score_signal returned no result (None). Please check score_signal implementation.")
 
     # 3) 应用模式预设/覆盖
     preset = MODE_PRESETS[args.mode].copy()
@@ -497,75 +490,20 @@ def main():
     if preset["core_ratio"] < 0 or preset["tactical_ratio"] < 0 or preset["core_ratio"] + preset["tactical_ratio"] > 1.0 + 1e-9:
         raise SystemExit("core_ratio + tactical_ratio 必须 ≤ 1 且均为非负。")
 
-    # 4) 依据模式微调战术档位（build 强制 0）
+    # 4) 依据模式微调战术档位（build 不抬档）
     adj_tier, adj_frac, adj_explain = adjust_tier_by_mode(args.mode, sig)
     sig_out = sig.copy()
     sig_out["tier_after_mode"] = adj_tier
     sig_out["tier_fraction_of_tactical_after_mode"] = adj_frac
     sig_out["mode_adjust_explain"] = adj_explain
 
-    # ------------------------ 5) 分配（只加不减，考虑当前仓位） ------------------------
-    cash = float(args.cash)
-    equity = float(args.equity)
-    total_cap = cash + equity
+    # 5) 分配今日金额（只加不减）
+    core_cap = args.cash * preset["core_ratio"]
+    tactical_cap = args.cash * preset["tactical_ratio"]
+    tactical_deploy = tactical_cap * adj_frac
+    total_invest = core_cap + tactical_deploy
+    remaining_cash = max(args.cash - total_invest, 0.0)
 
-    # 5.1 今日目标（对总资金）
-    core_target_cap = total_cap * preset["core_ratio"]
-    tactical_pool_cap = total_cap * preset["tactical_ratio"]
-    tactical_target_cap = tactical_pool_cap * adj_frac  # 今日战术目标只用“战术池”的一部分
-
-    # 5.2 推断当前已持有的底/战术归属
-    if (args.core_held is not None) and (args.tactical_held is not None):
-        core_held = float(args.core_held)
-        tactical_held = float(args.tactical_held)
-        if core_held < 0 or tactical_held < 0 or abs(core_held + tactical_held - equity) > 1e-6:
-            raise SystemExit("--core_held + --tactical_held 必须等于 --equity，且均为非负。")
-    else:
-        # 默认：优先把已有持仓计入底仓，最多不超过“目标底仓”；剩余计入战术
-        core_held = min(equity, core_target_cap)
-        tactical_held = max(0.0, equity - core_held)
-
-    # 5.3 计算今天需要补的量（只加不减 & 不超过现金）
-    core_need = max(0.0, core_target_cap - core_held)
-    core_buy = min(core_need, cash)
-    cash_after_core = cash - core_buy
-
-    tactical_need = max(0.0, tactical_target_cap - tactical_held)
-    tactical_buy = min(tactical_need, cash_after_core)
-
-    total_invest = core_buy + tactical_buy
-    remaining_cash = cash - total_invest
-
-    # 5.4 更新“加仓后”的估计
-    new_equity = equity + total_invest
-    actual_core_after = core_held + core_buy
-    actual_tac_after = tactical_held + tactical_buy
-    total_fraction_of_capital = new_equity / max(total_cap, 1e-9)
-
-    out_allocation = {
-        "core_invest": round(core_buy, 2),
-        "tactical_invest": round(tactical_buy, 2),
-        "remaining_cash": round(remaining_cash, 2),
-        "total_invest": round(total_invest, 2),
-        "total_fraction_of_capital": round(total_fraction_of_capital, 4),
-        "targets": {
-            "core_target_cap": round(core_target_cap, 2),
-            "tactical_target_cap": round(tactical_target_cap, 2),
-            "tactical_pool_cap": round(tactical_pool_cap, 2)
-        },
-        "current_before": {
-            "equity": round(equity, 2),
-            "core_held_used": round(core_held, 2),
-            "tactical_held_used": round(tactical_held, 2)
-        },
-        "current_after": {
-            "equity": round(new_equity, 2),
-            "core_estimated": round(actual_core_after, 2),
-            "tactical_estimated": round(actual_tac_after, 2)
-        }
-    }
-
-    # ------------------------ 输出 ------------------------
     out = {
         "request_date": target_date.isoformat(),
         "used_trading_date": use_date.isoformat(),
@@ -573,10 +511,7 @@ def main():
         "mode": args.mode,
         "ratios": preset,
         "inputs": {
-            "cash": cash,
-            "equity": equity,
-            "core_held": None if args.core_held is None else float(args.core_held),
-            "tactical_held": None if args.tactical_held is None else float(args.tactical_held)
+            "cash": args.cash
         },
         "fgi": {
             "value": fgi_val, "label": fgi_desc,
@@ -584,11 +519,18 @@ def main():
         },
         "price": price, "ma20": ma20, "ma50": ma50, "ma200": ma200,
         "signal": sig_out,
-        "allocation_today": out_allocation,
+        "allocation_today": {
+            "core_invest": round(core_cap, 2),            # 底仓今天投入
+            "tactical_invest": round(tactical_deploy, 2), # 战术仓今天投入
+            "remaining_cash": round(remaining_cash, 2),   # 剩余现金（空仓）
+            "total_invest": round(total_invest, 2),
+            # 额外给一个总仓位占比，便于直观理解
+            "total_fraction_of_capital": round(total_invest / max(args.cash, 1e-9), 4)
+        },
         "notes": {
-            "core": "底仓为长期持有部分，按模式“目标底仓”补齐；只加不减。",
+            "core": "底仓为长期持有部分，按模式比例直接投入（只加不减）。",
             "tactical": "战术仓在其额度内按 7 档投入：WAIT/10%/20%/30%/50%/75%/100%（可被模式微调）。",
-            "build_mode": "建仓模式下战术仓强制 0，仅买底仓。",
+            "modes": "build: 只买底仓；trend: 减少踏空；contrarian: 强化逢低；conservative/aggressive: 调整底仓/战术占比；balanced: 默认。",
         }
     }
 
